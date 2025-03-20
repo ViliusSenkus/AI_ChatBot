@@ -2,6 +2,9 @@
 .streamlit/secrets.toml
 secrets.toml
 
+# auto-generated files needed for running the app
+temp.*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
