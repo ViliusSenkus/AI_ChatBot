@@ -38,8 +38,8 @@ uploaded_documents = st.file_uploader("Choose document to analyze", type=["pdf",
 
 merged_documents = []
 documents_names = []
-chunk_size = 1000
-chunk_overlap = 200
+chunk_size = 600
+chunk_overlap = 100
 
 def load_document(document):
     if document is not None:
@@ -93,6 +93,9 @@ def read_doc(file):
 if "all_splits" not in st.session_state:
     st.session_state.all_splits = []
 
+if "vectorstore" not in st.session_state:
+    st.session_state.vectorstore = None
+
 if uploaded_documents:
     splits = load_document(uploaded_documents) # List<Documents>; Documents = {page_content, metadata}
     if splits:
@@ -100,6 +103,8 @@ if uploaded_documents:
     st.write(f"Data pieces generated: {len(st.session_state.all_splits)}")
 
 ################## Vectorising data #######################
+
+# Example of vectorising data query based just on the uploaded documents
 
 def create_vectorstore(documents, embedding_model_name='all-MiniLM-L6-v2'):
     if documents is not None:
@@ -119,18 +124,20 @@ def query_vectorstore(vectorstore, query_text, k=5):
         if vectorstore:
             results = vectorstore.similarity_search(query_text, k=k)
             if results:
-                for doc in results:
-                    st.write("Required data is gathered for processing", color="green")
+                st.write("Required data is gathered for processing", color="green")
+                return results
             else:
                 st.write("No data related to the query was found.", color = "red")
+                return []
         else:
             print("Vector store is not initialized.", color= "red")
     except Exception as e:
-        print(f"Error querying vector store: {e}")
+        print(f"Error while searching for similar vectors: {e}")
 
-if st.session_state.all_splits:
-    all_vectorstores = create_vectorstore(st.session_state.all_splits)
-    st.write(f"Vektors: {all_vectorstores}")
+# Create vector store if not already created
+if st.session_state.all_splits and st.session_state.vectorstore is None:
+    st.session_state.vectorstore = create_vectorstore(st.session_state.all_splits)
+    st.write(f"Vector store created: {st.session_state.vectorstore}")
 
 ############################################################
 ##################### ChatBot ##############################
@@ -152,35 +159,44 @@ if prompt := st.chat_input("What is up?"):
     # Add user message to chat history
     st.session_state.messages.append({"role": "user", "content": prompt})
 
-    query_vectorstore(all_vectorstores, prompt, k=5)
+    # Query the vector store
+    prompt_content = query_vectorstore(st.session_state.vectorstore, prompt, k=5)
+    if prompt_content:
+        combined_content = " ".join([doc.page_content for doc in prompt_content])
+    else:
+        combined_content = "No relevant content found."
+
+    # Add the combined content to the messages
+    st.session_state.messages.append({"role": "system", "content": f"Search in the following content: {combined_content}"})
 
     full_response = client.chat.completions.create(
     messages=[
-
         {
-            #  instruction/prompt enginering example - 1
+            #  instruction/prompt engineering example - 1
             "role": "system",
-            "content": "Always respond in lithuanian language, even if asked in any other language"
+            "content": "Always respond in Lithuanian language, even if asked in any other language"
         },
         {
-            #  instruction/prompt enginering example - 2
+            #  instruction/prompt engineering example - 2
             "role": "system",
-            "content": "pretend as you are an famoust traveler. Be polite, helpful, informal. Answer with no more than 3 short sentences. Allways add travel tips"
+            "content": "Pretend as you are a famous traveler. Be polite, helpful, informal. Answer with no more than 3 short sentences. Always add travel tips"
         },
         {
-            #  instruction/prompt enginering example - 3
+            #  instruction/prompt engineering example - 3
             "role": "assistant",
-            "content": "rephrase user question in the begining of answer and ask related question on answer content at the end of the answer"
+            "content": "Rephrase user question in the beginning of the answer and ask a related question on answer content at the end of the answer"
         },
         {
             "role": "user",
             "content": prompt,
+        },
+        {
+            "role": "system",
+            "content": f"Search in the following content: {combined_content}"
         }
     ],
     model="gpt-4o",
-    # temperature=1,
     max_tokens=4096,
-    # top_p=1
 )
 
     response = full_response.choices[0].message.content
@@ -189,8 +205,3 @@ if prompt := st.chat_input("What is up?"):
         st.markdown(response)
     # Add assistant response to chat history
     st.session_state.messages.append({"role": "assistant", "content": response})
-
-
-    ##### add file aploading to get the response from the model
-    ##### integrate RAG, langchain
-
