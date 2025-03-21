@@ -4,10 +4,14 @@
 
 import streamlit as st
 from openai import OpenAI
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from langchain_community.document_loaders import PyPDFLoader
+from langchain.document_loaders import Docx2txtLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-import pypdf
-import io
+from langchain.schema import Document
+# for vectorising
+from langchain.embeddings import SentenceTransformerEmbeddings
+from langchain.vectorstores import FAISS
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 st.title("My first ChatBot")
 
@@ -16,17 +20,38 @@ client = OpenAI(
     api_key=st.secrets["GITHUB_TOKEN"]
     )
 
-# File uploaders
+############################################################
+######## Picture upload and analysis #######################
+############################################################
+
 uploaded_picture = st.file_uploader("Choose picture to discuss on", type=["jpg", "jpeg", "png"], accept_multiple_files=False)
 if uploaded_picture is not None:
     st.image(uploaded_picture, caption="Jūsų įkelta nuotrauka diskusijai")
 
-uploaded_document = st.file_uploader("Choose document to analyze", type=["pdf", "txt", "doc", "docx"], accept_multiple_files=False)
+############################################################
+######## Documents upload and analysis #####################
+############################################################
+
+uploaded_documents = st.file_uploader("Choose document to analyze", type=["pdf", "txt", "docx"], accept_multiple_files=False)
+
+# Parameters and functions for document analysis
 
 merged_documents = []
 documents_names = []
 chunk_size = 1000
 chunk_overlap = 200
+
+def load_document(document):
+    if document is not None:
+            if document.type == "application/pdf":
+                return read_pdf(document)
+            elif document.type == "text/plain":
+                return read_txt(document)
+            elif document.type == "application/msword" or document.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                return read_doc(document)
+            else:
+                st.error(f"This file type ({document.type}) is not supported.")
+                return []
 
 def read_pdf(file):
     with open("temp.pdf", "wb") as f:
@@ -34,38 +59,82 @@ def read_pdf(file):
     loader = PyPDFLoader("temp.pdf")
     pages = loader.load()
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-    docs = text_splitter.split_documents(pages)
-    return docs
+    chunks = text_splitter.split_documents(pages) 
+    return chunks
 
 def read_txt(file):
-    text = file.getvalue()
-    docs=[]
+    text = file.getvalue().decode('utf-8')
+    chunks=[]
     i = 0
     while i < len(text):
         if i + chunk_size > len(text):
             chunk = text[i:]
         else:
             chunk = text[i:i + chunk_size]
-        docs.append(chunk)
+        doc = Document(page_content=chunk, metadata={
+           "source": file.name,
+            "chunk_index": f"from {i} to {i + len(chunk)}"
+        })    
+        chunks.append(doc)
         i += chunk_size - chunk_overlap
-    return docs
+    return chunks
+
+def read_doc(file):
+    with open("temp.docx", "wb") as f:  # Changed extension to .docx
+        f.write(file.getvalue())
+    loader = Docx2txtLoader("temp.docx")
+    pages = loader.load()
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    chunks = text_splitter.split_documents(pages)
+    return chunks
+
+# Processing of uploaded document
+
+if "all_splits" not in st.session_state:
+    st.session_state.all_splits = []
+
+if uploaded_documents:
+    splits = load_document(uploaded_documents) # List<Documents>; Documents = {page_content, metadata}
+    if splits:
+        st.session_state.all_splits.extend(splits)
+    st.write(f"Data pieces generated: {len(st.session_state.all_splits)}")
+
+################## Vectorising data #######################
+
+def create_vectorstore(documents, embedding_model_name='all-MiniLM-L6-v2'):
+    if documents is not None:
+        try:
+            st.write(f"Creating vector store with {len(documents)} documents.")
+            embedding_function = SentenceTransformerEmbeddings(model_name=embedding_model_name)
+            st.write("Embedding model loaded successfully.")
+            vectorstore = FAISS.from_documents(documents, embedding_function)
+            st.write("Vector store created successfully.")
+            return vectorstore
+        except Exception as e:
+            st.error(f"Error creating vector store: {e}")
+            return None
     
-######!!!!!!!!!!!!!!!!!!!!!!!!!!!REIKIA SUDETI KELIS DOKUMNETUS
-
-def load_document(document):
-    if document is not None:
-        if document.type == "application/pdf":
-            text = read_pdf(document)
-            st.write(text)
-        elif document.type == "text/plain":
-            text = read_txt(document)
-            st.write(text)
+def query_vectorstore(vectorstore, query_text, k=5):
+    try:
+        if vectorstore:
+            results = vectorstore.similarity_search(query_text, k=k)
+            if results:
+                for doc in results:
+                    st.write("Required data is gathered for processing", color="green")
+            else:
+                st.write("No data related to the query was found.", color = "red")
         else:
-            st.error("MS word files are not supported yet.")
+            print("Vector store is not initialized.", color= "red")
+    except Exception as e:
+        print(f"Error querying vector store: {e}")
 
-load_document(uploaded_document)
+if st.session_state.all_splits:
+    all_vectorstores = create_vectorstore(st.session_state.all_splits)
+    st.write(f"Vektors: {all_vectorstores}")
 
-#vectorising data
+############################################################
+##################### ChatBot ##############################
+############################################################
 
 # initiate chat session to keep chat history
 if "messages" not in st.session_state:
@@ -82,6 +151,8 @@ if prompt := st.chat_input("What is up?"):
     st.chat_message("user").markdown(prompt)
     # Add user message to chat history
     st.session_state.messages.append({"role": "user", "content": prompt})
+
+    query_vectorstore(all_vectorstores, prompt, k=5)
 
     full_response = client.chat.completions.create(
     messages=[
@@ -123,4 +194,3 @@ if prompt := st.chat_input("What is up?"):
     ##### add file aploading to get the response from the model
     ##### integrate RAG, langchain
 
-    
