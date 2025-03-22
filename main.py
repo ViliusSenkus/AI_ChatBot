@@ -38,8 +38,8 @@ uploaded_documents = st.file_uploader("Choose document to analyze", type=["pdf",
 
 merged_documents = []
 documents_names = []
-chunk_size = 600
-chunk_overlap = 100
+chunk_size = 1000
+chunk_overlap = 200
 
 def load_document(document):
     if document is not None:
